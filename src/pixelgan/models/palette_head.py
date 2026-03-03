@@ -126,7 +126,7 @@ class PaletteLookup(nn.Module):
     def __call__(
         self,
         logits:  jnp.ndarray,   # [B, H, W, N]
-        palette: jnp.ndarray,   # [N, 3]  float32 in [-1, 1]
+        palette: jnp.ndarray,   # [N, 3] or [B, N, 3]  float32 in [-1, 1]
         temperature: Optional[float] = None,
     ) -> jnp.ndarray:           # [B, H, W, 3]
         """
@@ -134,7 +134,7 @@ class PaletteLookup(nn.Module):
 
         Args:
             logits:      Per-pixel palette logits from ToPaletteLogits.
-            palette:     float32 [N, 3] palette in [-1, 1] (matches model space).
+            palette:     float32 [N, 3] (shared) or [B, N, 3] (per-sample).
             temperature: Override the module's temperature for this call.
 
         Returns:
@@ -142,8 +142,12 @@ class PaletteLookup(nn.Module):
         """
         tau = temperature if temperature is not None else self.temperature
         probs = jax.nn.softmax(logits / tau, axis=-1)  # [B, H, W, N]
-        # palette: [N, 3] → broadcast matmul
-        rgb = jnp.einsum("bhwn,nc->bhwc", probs, palette)  # [B, H, W, 3]
+        if palette.ndim == 2:
+            # Single palette broadcast across all batch samples
+            rgb = jnp.einsum("bhwn,nc->bhwc", probs, palette)
+        else:
+            # Per-sample palettes: [B, N, 3]
+            rgb = jnp.einsum("bhwn,bnc->bhwc", probs, palette)
         return rgb
 
 

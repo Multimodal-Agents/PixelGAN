@@ -54,7 +54,17 @@ def parse_args():
                         help="Image size (8=NES, 16=retro icon, 32=SNES, 64=N64, 128, 256)")
     parser.add_argument("--channels", type=int, default=3,
                         choices=[3, 4],
-                        help="Image channels (3=RGB on neutral bg, 4=RGBA — avoid 4 for sprite datasets with transparent backgrounds)")
+                        help="Image channels (3=RGB on neutral bg, 4=RGBA)")
+    parser.add_argument("--output-mode", default="rgb",
+                        choices=["rgb", "palette_indexed"],
+                        help="Generator output mode. "
+                             "'rgb' = standard [-1,1] RGB output. "
+                             "'palette_indexed' = G outputs N palette logits per pixel; "
+                             "a differentiable PaletteLookup maps them to RGB for D. "
+                             "Requires an indexed-format dataset (run convert_to_indexed.py first).")
+    parser.add_argument("--palette-colors", type=int, default=8,
+                        help="Palette size for palette_indexed mode (default: 8). "
+                             "Must match the value used in convert_to_indexed.py.")
 
     # Dataset
     parser.add_argument("--dataset", required=True,
@@ -173,14 +183,24 @@ def main():
     cfg = get_config(args.size, **overrides)
     cfg.training.output_dir = args.output
 
+    # Option A: palette-indexed output mode
+    cfg.arch.output_mode      = args.output_mode
+    cfg.arch.n_palette_colors = args.palette_colors
+
     # Load dataset
     print(f"\nLoading dataset: {args.dataset}")
+    _ds_kwargs = {}
+    if args.dataset_type == "seed":
+        # Pass n_palette_slots so SeedDataset returns the palette column
+        # when it detects an indexed-format parquet (Option B).
+        _ds_kwargs["n_palette_slots"] = args.palette_colors
     dataset = load_dataset(
         path=args.dataset,
         dataset_type=args.dataset_type,
         image_size=args.size,
         image_channels=args.channels,
         split="train",
+        **_ds_kwargs,
     )
     print(f"  Dataset size: {len(dataset)} samples")
 
@@ -197,6 +217,9 @@ def main():
     print(f"Training Summary")
     print(f"{'='*60}")
     print(f"  Model size:    {args.size}×{args.size} pixel art")
+    print(f"  Output mode:   {args.output_mode}"
+          + (f" ({args.palette_colors} colours)"
+             if args.output_mode == "palette_indexed" else ""))
     print(f"  Dataset type:  {args.dataset_type}")
     print(f"  Batch size:    {cfg.training.batch_size}")
     print(f"  G LR:          {cfg.training.g_lr}")

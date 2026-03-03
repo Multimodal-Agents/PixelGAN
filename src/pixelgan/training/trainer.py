@@ -40,6 +40,10 @@ from flax import traverse_util
 
 from ..models.generator import PixelArtGenerator, make_generator
 from ..models.discriminator import PixelArtDiscriminator, make_discriminator
+from ..models.palette_head import (
+    PaletteLookup, get_palette_temperature,
+    decode_to_indices, indices_to_rgb_numpy,
+)
 from ..training.losses import (
     generator_loss, discriminator_loss,
     compute_g_loss, compute_d_loss,
@@ -120,19 +124,22 @@ def ada_augment(
 # Training step functions (pure JAX, JIT-compiled)
 # ---------------------------------------------------------------------------
 
-@partial(jax.jit, static_argnums=(0, 1, 9))
+@partial(jax.jit, static_argnums=(0, 1, 9, 13))
 def train_step_d(
     generator: PixelArtGenerator,
     discriminator: PixelArtDiscriminator,
     g_state: train_state.TrainState,
     d_state: train_state.TrainState,
-    real_images: jnp.ndarray,        # [B, H, W, C]
-    z: jnp.ndarray,                  # [B, z_dim] latent codes
+    real_images: jnp.ndarray,          # [B, H, W, C]
+    z: jnp.ndarray,                    # [B, z_dim] latent codes
     condition: Optional[jnp.ndarray],  # Conditioning (type depends on mode)
-    ada_p: float,                     # ADA augmentation probability
-    r1_gamma: float,                  # R1 penalty weight
-    apply_r1: bool,                   # Whether to apply R1 this step
+    ada_p: float,                      # ADA augmentation probability
+    r1_gamma: float,                   # R1 penalty weight
+    apply_r1: bool,                    # Whether to apply R1 this step (static)
     rng: jax.random.KeyArray,
+    palette: jnp.ndarray,              # [B, N, 3] per-sample palette (ignored in rgb mode)
+    temperature: float,                # Softmax temperature for PaletteLookup
+    output_mode: str,                  # "rgb" | "palette_indexed"  (static)
 ) -> tuple[train_state.TrainState, dict]:
     """
     Discriminator training step.
@@ -141,8 +148,8 @@ def train_step_d(
     """
     rng, noise_rng, aug_rng_real, aug_rng_fake = jax.random.split(rng, 4)
 
-    # Generate fake images (no gradient through generator)
-    fake_images = generator.apply(
+    # Generate fake output (logits in palette mode, RGB in rgb mode)
+    fake_output = generator.apply(
         {"params": g_state.params, "ema": g_state.ema_vars},
         z,
         condition,
@@ -150,6 +157,11 @@ def train_step_d(
         rng=noise_rng,
         mutable=False,
     )
+    if output_mode == "palette_indexed":
+        # Convert palette logits → RGB so D always receives 3-channel images
+        fake_images = PaletteLookup()(fake_output, palette, temperature)
+    else:
+        fake_images = fake_output
     fake_images = jax.lax.stop_gradient(fake_images)
 
     # Apply ADA augmentation
@@ -186,7 +198,7 @@ def train_step_d(
     return d_state, metrics
 
 
-@partial(jax.jit, static_argnums=(0, 1))
+@partial(jax.jit, static_argnums=(0, 1, 11))
 def train_step_g(
     generator: PixelArtGenerator,
     discriminator: PixelArtDiscriminator,
@@ -197,6 +209,9 @@ def train_step_g(
     ada_p: float,
     ema_beta: float,                   # EMA decay for generator
     rng: jax.random.KeyArray,
+    palette: jnp.ndarray,             # [B, N, 3] per-sample palette (ignored in rgb mode)
+    temperature: float,               # Softmax temperature for PaletteLookup
+    output_mode: str,                 # "rgb" | "palette_indexed"  (static)
 ) -> tuple[GANTrainState, dict]:
     """
     Generator training step.
@@ -208,7 +223,7 @@ def train_step_g(
     g_ema_vars = g_state.ema_vars
 
     def g_loss_fn(g_params):
-        fake_images = generator.apply(
+        fake_output = generator.apply(
             {"params": g_params, "ema": g_ema_vars},
             z,
             condition,
@@ -216,6 +231,11 @@ def train_step_g(
             rng=noise_rng,
             mutable=False,
         )
+        if output_mode == "palette_indexed":
+            # PaletteLookup is fully differentiable — gradients flow into G
+            fake_images = PaletteLookup()(fake_output, palette, temperature)
+        else:
+            fake_images = fake_output
 
         # Augment fake images before discriminating
         fake_aug = ada_augment(fake_images, ada_p, aug_rng)
@@ -317,11 +337,21 @@ class PixelGANTrainer:
         self.cur_tick = 0
         self.ada_p = 0.0  # ADA augmentation probability
 
+        # Option A: palette-indexed output state
+        self._output_mode: str = self.arch.output_mode      # "rgb" | "palette_indexed"
+        self._n_palette_colors: int = self.arch.n_palette_colors
+        self._palette_temperature: float = 1.0
+        self._last_palette: Optional[np.ndarray] = None     # [B, N, 3] from last batch
+        self._total_steps: Optional[int] = None             # set in fit() for temp annealing
+
         # Initialize training states
         self._init_states()
 
         print(f"PixelGAN initialized:")
         print(f"  Image size:     {self.arch.image_size}×{self.arch.image_size}")
+        print(f"  Output mode:    {self._output_mode}"
+              + (f" ({self._n_palette_colors} colours)"
+                 if self._output_mode == "palette_indexed" else ""))
         print(f"  Dataset type:   {self.tcfg.dataset_type}")
         print(f"  Output:         {self.output_dir}")
         print(f"  G params: {self._count_params(self.g_state.params):,}")
@@ -438,9 +468,17 @@ class PixelGANTrainer:
             self.rng, gen_rng = jax.random.split(self.rng)
             images = generate_samples(self.generator, self.g_state, z, None, gen_rng)
 
-            # Denormalize [-1,1] -> [0,255]
-            images_np = np_.array(images)
-            images_np = ((images_np + 1.0) * 127.5).clip(0, 255).astype(np_.uint8)
+            # Option A: palette-indexed → convert logits to uint8 RGB
+            if (self._output_mode == "palette_indexed"
+                    and self._last_palette is not None):
+                indices = np_.array(decode_to_indices(images))  # [B, H, W] uint8
+                pal_float = self._last_palette[0]               # [N, 3] float32 [-1,1]
+                pal_uint8 = ((np_.clip(pal_float, -1, 1) + 1) * 127.5).astype(np_.uint8)
+                images_np = indices_to_rgb_numpy(indices, pal_uint8)
+            else:
+                # RGB mode: standard denormalize [-1,1] -> [0,255]
+                images_np = np_.array(images)
+                images_np = ((images_np + 1.0) * 127.5).clip(0, 255).astype(np_.uint8)
 
             n_cols = min(8, n_samples)
             n_rows = (n_samples + n_cols - 1) // n_cols
@@ -571,6 +609,15 @@ class PixelGANTrainer:
 
         apply_r1 = (step % tcfg.r1_interval == 0)
 
+        # ── Option A: palette & temperature ──────────────────────────────
+        tau = get_palette_temperature(step, self._total_steps or 100_000)
+        self._palette_temperature = tau
+        if "palette" in batch:
+            palette = jnp.array(batch["palette"])       # [B, N, 3] float32 [-1,1]
+            self._last_palette = np.array(batch["palette"])
+        else:
+            palette = jnp.zeros((B, self._n_palette_colors, 3))
+
         # ── Discriminator update ──────────────────────────────────────────
         # Scale r1_gamma by the interval: lazy reg applies (gamma*interval/2)*penalty
         # once every N steps so the *expected* penalty per step equals (gamma/2)*penalty.
@@ -582,6 +629,7 @@ class PixelGANTrainer:
             real_images, z, condition,
             self.ada_p, r1_gamma_scaled, apply_r1,
             d_rng,
+            palette, tau, self._output_mode,
         )
 
         # ── Generator update ──────────────────────────────────────────────
@@ -595,6 +643,7 @@ class PixelGANTrainer:
             z2, condition,
             self.ada_p, ema_beta,
             g_rng,
+            palette, tau, self._output_mode,
         )
 
         # Update ADA every ada_interval steps
@@ -654,6 +703,7 @@ class PixelGANTrainer:
         if steps is None:
             steps = (self.tcfg.total_kimg * 1000) // self.tcfg.batch_size
 
+        self._total_steps = steps  # used by train_on_batch for temperature annealing
         loader = infinite_loader(dataset, self.tcfg.batch_size)
         t_start = time.time()
 
