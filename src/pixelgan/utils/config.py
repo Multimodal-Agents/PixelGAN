@@ -17,7 +17,7 @@ Performance targets vs StyleGAN3 (256×256 reference):
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Tuple
 
 
 # ---------------------------------------------------------------------------
@@ -48,6 +48,11 @@ class ArchConfig:
     d_max_channels: int = 512     # Maximum channels at lowest resolution
     d_mbstd_group: int = 4        # Minibatch std group size (diversity)
     d_num_layers: int = 3         # PatchGAN extra conv layers
+
+    # --- Output mode ---
+    output_mode: str = "rgb"      # "rgb" | "palette_indexed"
+    n_palette_colors: int = 8     # Palette size for palette_indexed mode
+    palette_bg_rgb: Tuple[int, int, int] = (40, 40, 40)  # Transparent → this BG
 
     # --- Conditioning ---
     cond_type: str = "none"       # "none", "class", "text", "image"
@@ -86,6 +91,42 @@ class ArchConfig:
             ch = ch * 2
             res //= 2
         return channels
+
+
+@dataclass
+class VQVAEConfig:
+    """
+    Configuration for the VQ-VAE (Option C).
+
+    The VQ-VAE is trained in Stage 1 to compress 64×64 pixel art images
+    into an 8×8 discrete latent space.  The GAN (Stage 2) then generates
+    directly in that compact latent space, with the frozen VQ-VAE decoder
+    expanding it back to 64×64.
+
+    Why these defaults:
+      codebook_size=256  — enough codes for pixel art diversity (vs 8192 for photos)
+      latent_dim=64      — compact enough to train fast; rich enough for pixel art
+      base_channels=64   — encoder/decoder channel budget (≈180k+280k params)
+      n_res_blocks=2     — two residual blocks per scale; sufficient for 64px art
+      commitment_beta=0.25 — standard value from VQ-VAE-2 paper
+    """
+    codebook_size:    int   = 256     # K: number of discrete codes
+    latent_dim:       int   = 64      # D: code vector dimension
+    base_channels:    int   = 64      # encoder/decoder channel base
+    n_res_blocks:     int   = 2       # residual blocks per scale level
+    commitment_beta:  float = 0.25    # weight of commitment loss term
+    ema_decay:        float = 0.99    # EMA codebook update decay
+
+    # Training (Stage 1)
+    lr:               float = 1e-3    # Adam LR for VQ-VAE
+    batch_size:       int   = 16      # VQ-VAE training batch size
+    total_steps:      int   = 10_000  # Stage 1 training steps
+    snapshot_steps:   int   = 1_000   # Save checkpoint every N steps
+    lambda_recon:     float = 1.0     # Reconstruction loss weight
+    lambda_vq:        float = 1.0     # VQ loss weight
+
+    # Saved weights path (filled in by training script)
+    checkpoint_path:  str   = "runs/vqvae/checkpoint"
 
 
 @dataclass
@@ -140,9 +181,10 @@ class TrainingConfig:
 @dataclass
 class PixelGANConfig:
     """Complete PixelGAN configuration."""
-    arch: ArchConfig = field(default_factory=ArchConfig)
+    arch:     ArchConfig     = field(default_factory=ArchConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
-    name: str = "pixelgan"
+    vqvae:    Optional[VQVAEConfig] = None  # Set to enable VQ-VAE (Option C)
+    name:     str = "pixelgan"
 
 
 # ---------------------------------------------------------------------------

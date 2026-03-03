@@ -23,3 +23,19 @@ from .tree_generator import (
     generate_tree_batch,
     generate_all_tree_batches,
 )
+
+# Option B: palette-indexed parquet format
+try:
+    from .indexed_format import (
+        IndexedSprite,
+        rgba_to_indexed,
+        indexed_to_rgb,
+        indexed_to_float,
+        indexed_to_palette_array,
+        save_indexed_parquet,
+        load_indexed_parquet,
+        is_indexed_parquet,
+        decode_indexed_row,
+    )
+except ImportError:
+    pass  # pyarrow not installed — indexed format unavailable

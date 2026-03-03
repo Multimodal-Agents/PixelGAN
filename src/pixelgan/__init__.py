@@ -20,7 +20,7 @@ __version__ = "0.1.0"
 __author__ = "PixelGAN Team"
 
 # Always available (no JAX required)
-from .utils.config import get_config, PixelGANConfig, VALID_SIZES
+from .utils.config import get_config, PixelGANConfig, VQVAEConfig, VALID_SIZES
 from .data.sprite_generator import (
     SPRITES, CATEGORIES,
     generate_training_batch,
@@ -36,7 +36,13 @@ from .data.color_palette import (
 try:
     from .models.generator import make_generator, PixelArtGenerator
     from .models.discriminator import make_discriminator, PixelArtDiscriminator
+    from .models.palette_head import (
+        ToPaletteLogits, PaletteLookup,
+        get_palette_temperature, decode_to_indices,
+    )
+    from .models.vqvae import VQVAE, make_vqvae, vqvae_loss
     from .training.trainer import PixelGANTrainer
+    from .training.vqvae_trainer import VQVAETrainer, load_vqvae_decoder
     from .training.dataset import (
         load_dataset, SeedDataset, TextDataset, ImagePairDataset,
     )
@@ -46,7 +52,7 @@ except ImportError:
 
 __all__ = [
     # Config (always available)
-    "get_config", "PixelGANConfig", "VALID_SIZES",
+    "get_config", "PixelGANConfig", "VQVAEConfig", "VALID_SIZES",
     # Data generation (always available)
     "SPRITES", "CATEGORIES",
     "generate_training_batch", "generate_sprite_sheet", "list_sprites",
@@ -57,6 +63,9 @@ if _JAX_AVAILABLE:
     __all__ += [
         "make_generator", "PixelArtGenerator",
         "make_discriminator", "PixelArtDiscriminator",
-        "PixelGANTrainer",
+        "ToPaletteLogits", "PaletteLookup",
+        "get_palette_temperature", "decode_to_indices",
+        "VQVAE", "make_vqvae", "vqvae_loss",
+        "PixelGANTrainer", "VQVAETrainer", "load_vqvae_decoder",
         "load_dataset", "SeedDataset", "TextDataset", "ImagePairDataset",
     ]

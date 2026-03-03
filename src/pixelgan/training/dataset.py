@@ -35,6 +35,22 @@ from typing import Iterator, Optional
 import numpy as np
 from PIL import Image
 
+# Lazy import: indexed_format is only available when pyarrow is installed.
+# We import at module level here so dataset.py can detect the format early;
+# if pyarrow is absent the standard PNG-parquet path still works fine.
+try:
+    from ..data.indexed_format import (
+        is_indexed_parquet,
+        decode_indexed_row,
+    )
+    _INDEXED_FORMAT_AVAILABLE = True
+except ImportError:
+    _INDEXED_FORMAT_AVAILABLE = False
+    def is_indexed_parquet(path) -> bool:          # type: ignore[misc]
+        return False
+    def decode_indexed_row(row, *a, **kw):          # type: ignore[misc]
+        raise RuntimeError("pyarrow required for indexed parquet")
+
 
 # ---------------------------------------------------------------------------
 # Dataset type definitions
@@ -276,47 +292,104 @@ class SeedDataset(ParquetDataset):
     """
     Seed->Image dataset.
 
-    Parquet format:
-      - seed  (int64):  Integer seed (used to reproduce this sample)
-      - image (bytes):  PNG image bytes
+    Supports **two** parquet schemas transparently:
 
-    Used for unconditional generation: the model learns to generate
-    diverse pixel art from random seeds.
+    1. Standard (PNG-image) schema:
+          seed  (int64)   — reproducible random seed
+          image (bytes)   — PNG image bytes
+
+    2. Indexed (palette-compressed) schema produced by convert_to_indexed.py:
+          seed       (int64)  — reproducible random seed
+          index_map  (bytes)  — uint8 [H,W] palette index map (raw bytes)
+          palette_data (bytes) — uint8 [N,3] RGB palette (raw bytes)
+          n_colors   (int64)  — number of palette entries used
+
+    When the indexed schema is detected the dataset automatically uses
+    `decode_indexed_row()` and returns an extra ``palette`` key so the
+    trainer can feed it to `PaletteLookup` (Option A) without any changes
+    to the training script itself.
     """
     DATASET_TYPE = "seed"
-    COLUMNS = ["seed", "image"]
+    # Accept both schemas — pandas will load whichever columns exist.
+    COLUMNS = ["seed", "image"]  # overridden below when indexed
+
+    def __init__(self, *args, n_palette_slots: int = 16, **kwargs):
+        """
+        Extra arg:
+            n_palette_slots: Palette array size (padded/truncated to this).
+                             Must match the generator's n_palette_colors.
+                             Only used in indexed mode.
+        """
+        self.n_palette_slots = n_palette_slots
+
+        # Detect schema *before* calling super().__init__ so we can set
+        # COLUMNS correctly and avoid a missing-column error.
+        from pathlib import Path as _Path
+        _path = _Path(args[0]) if args else _Path(kwargs["path"])
+        self._is_indexed = (
+            _INDEXED_FORMAT_AVAILABLE and is_indexed_parquet(_path)
+        )
+        if self._is_indexed:
+            self.__class__.COLUMNS = [
+                "seed", "index_map", "palette_data", "n_colors"
+            ]
+        else:
+            self.__class__.COLUMNS = ["seed", "image"]
+
+        super().__init__(*args, **kwargs)
 
     def __getitem__(self, idx: int) -> dict:
         """
-        Returns:
-            dict with:
-              - 'z_seed': int seed value
-              - 'image': [H, W, C] float32 in [-1, 1]
+        Returns a dict with:
+          Always:
+            ``z_seed``  int
+            ``image``   [H, W, C] float32 in [-1, 1]
+          Only in indexed mode:
+            ``palette`` [n_palette_slots, 3] float32 in [-1, 1]
         """
         row_idx = self._indices[idx]
         row = self._df.iloc[row_idx]
 
-        image = decode_image(bytes(row["image"]), self.image_size, self.image_channels)
-
-        return {
-            "z_seed": int(row["seed"]),
-            "image": image.astype(np.float32),
-        }
+        if self._is_indexed:
+            image, palette = decode_indexed_row(
+                row,
+                target_size=self.image_size,
+                n_palette_slots=self.n_palette_slots,
+            )
+            return {
+                "z_seed":  int(row["seed"]),
+                "image":   image.astype(np.float32),
+                "palette": palette.astype(np.float32),
+            }
+        else:
+            image = decode_image(
+                bytes(row["image"]), self.image_size, self.image_channels
+            )
+            return {
+                "z_seed": int(row["seed"]),
+                "image":  image.astype(np.float32),
+            }
 
     def get_batch(self, batch_size: int, start_idx: int = 0) -> dict:
         """Get a batch of samples as numpy arrays."""
-        images = []
-        seeds = []
+        images, seeds = [], []
+        palettes = [] if self._is_indexed else None
+
         for i in range(batch_size):
             idx = (start_idx + i) % len(self)
             sample = self[idx]
             images.append(sample["image"])
             seeds.append(sample["z_seed"])
+            if palettes is not None:
+                palettes.append(sample["palette"])
 
-        return {
-            "image": np.stack(images),  # [B, H, W, C]
-            "z_seed": np.array(seeds, dtype=np.int64),  # [B]
+        batch = {
+            "image":  np.stack(images),                  # [B, H, W, C]
+            "z_seed": np.array(seeds, dtype=np.int64),   # [B]
         }
+        if palettes is not None:
+            batch["palette"] = np.stack(palettes)        # [B, N, 3]
+        return batch
 
 
 class TextDataset(ParquetDataset):

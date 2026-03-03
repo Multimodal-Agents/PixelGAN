@@ -16,5 +16,7 @@ try:
         compute_g_loss, compute_d_loss,
     )
     from .trainer import PixelGANTrainer
+    # Option C: VQ-VAE Stage 1 trainer
+    from .vqvae_trainer import VQVAETrainer, load_vqvae_decoder
 except ImportError:
     pass

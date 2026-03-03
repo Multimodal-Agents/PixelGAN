@@ -29,6 +29,7 @@ import jax.numpy as jnp
 import flax.linen as nn
 
 from .mapping_network import MappingNetwork, TextEncoder, ImageEncoder
+from .palette_head import ToPaletteLogits
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +249,9 @@ class SynthesisNetwork(nn.Module):
     base_channels: int = 256
     min_channels: int = 16
     use_noise: bool = True
+    # --- Option A: palette-indexed output ---
+    output_mode: str = "rgb"      # "rgb" or "palette_indexed"
+    n_palette_colors: int = 8     # Only used when output_mode="palette_indexed"
 
     def _channels(self, res: int) -> int:
         """Channel count for a given resolution."""
@@ -265,7 +269,7 @@ class SynthesisNetwork(nn.Module):
         ws: jnp.ndarray,           # [B, num_ws, w_dim]
         rng: Optional[jax.random.KeyArray] = None,
         train: bool = True,
-    ) -> jnp.ndarray:              # [B, H, W, image_channels]
+    ) -> jnp.ndarray:              # [B, H, W, image_channels] OR [B, H, W, N] logits
         """
         Synthesize images from style codes.
 
@@ -275,7 +279,12 @@ class SynthesisNetwork(nn.Module):
             train: Training mode
 
         Returns:
-            images: [B, image_size, image_size, image_channels] in [-1, 1]
+            When output_mode=="rgb":
+                images: [B, image_size, image_size, image_channels] in [-1, 1]
+            When output_mode=="palette_indexed":
+                logits: [B, image_size, image_size, n_palette_colors] raw logits
+                (feed to PaletteLookup for differentiable RGB during training,
+                 or argmax for discrete indices during inference)
         """
         B = ws.shape[0]
 
@@ -314,16 +323,27 @@ class SynthesisNetwork(nn.Module):
                 name=f"block_{res_in}to{res_out}",
             )(x, w_block, block_rngs[i], train)
 
-        # Final ToRGB conversion
+        # Final ToRGB / ToPaletteLogits conversion
         # Use last style code for color
         w_last = ws[:, min(self.num_blocks - 1, ws.shape[1] - 1), :]
-        images = ToRGB(
-            image_channels=self.image_channels,
-            w_dim=self.w_dim,
-            name="to_rgb",
-        )(x, w_last)
 
-        return images  # [B, image_size, image_size, image_channels]
+        if self.output_mode == "palette_indexed":
+            # Option A: output raw logits [B, H, W, N]
+            # Caller applies PaletteLookup for differentiable RGB
+            images = ToPaletteLogits(
+                n_colors=self.n_palette_colors,
+                w_dim=self.w_dim,
+                name="to_palette_logits",
+            )(x, w_last)
+        else:
+            # Default: RGB output [B, H, W, image_channels]
+            images = ToRGB(
+                image_channels=self.image_channels,
+                w_dim=self.w_dim,
+                name="to_rgb",
+            )(x, w_last)
+
+        return images  # [B, image_size, image_size, ...]
 
 
 # ---------------------------------------------------------------------------
@@ -371,6 +391,9 @@ class PixelArtGenerator(nn.Module):
     text_vocab_size: int = 1024
     text_embed_dim: int = 128
     image_cond_size: int = 32  # Input size for image encoder
+    # --- Option A: palette-indexed output ---
+    output_mode: str = "rgb"      # "rgb" or "palette_indexed"
+    n_palette_colors: int = 8     # Palette size for indexed mode
 
     @property
     def c_dim(self) -> int:
@@ -460,8 +483,10 @@ class PixelArtGenerator(nn.Module):
             base_channels=self.base_channels,
             min_channels=self.min_channels,
             use_noise=self.use_noise,
+            output_mode=self.output_mode,
+            n_palette_colors=self.n_palette_colors,
             name="synthesis",
-        )(ws, rng, train)  # [B, H, W, image_channels]
+        )(ws, rng, train)  # [B, H, W, ...]
 
         return images
 
@@ -486,4 +511,6 @@ def make_generator(cfg: "PixelGANConfig") -> PixelArtGenerator:
         num_classes=arch.num_classes,
         text_vocab_size=arch.text_vocab_size,
         text_embed_dim=arch.text_embed_dim,
+        output_mode=arch.output_mode,
+        n_palette_colors=arch.n_palette_colors,
     )
