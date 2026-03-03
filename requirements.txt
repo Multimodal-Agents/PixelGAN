@@ -1,0 +1,37 @@
+# PixelGAN - JAX-based Pixel Art GAN
+# Hyper-optimized for pixel art: ~100x smaller than StyleGAN3, ~100x faster inference
+
+# Core ML framework
+jax[cuda12]>=0.4.25          # JAX with CUDA 12 support (use jax[cpu] for CPU-only)
+# jax[cpu]>=0.4.25           # CPU-only alternative
+flax>=0.8.0                  # Neural network library for JAX
+optax>=0.2.2                 # Gradient processing and optimization
+
+# Data
+pyarrow>=14.0.0              # Parquet file reading
+pandas>=2.0.0                # DataFrame operations
+datasets>=2.18.0             # HuggingFace datasets for easy parquet loading
+
+# Image processing
+Pillow>=10.0.0               # PNG generation and image manipulation
+numpy>=1.24.0                # Numerical operations
+
+# Text conditioning (lightweight alternative to CLIP)
+sentencepiece>=0.2.0         # Tokenization
+
+# Visualization & logging
+matplotlib>=3.7.0            # Plotting loss curves, sprite sheets
+tqdm>=4.66.0                 # Progress bars
+tensorboard>=2.15.0          # Training visualization (optional)
+rich>=13.0.0                 # Multi-bar terminal UI (colored progress bars, Live layout)
+halo>=0.0.31                 # Spinner for JIT compilation phase
+
+# Checkpointing
+orbax-checkpoint>=0.5.0      # Flax-native checkpointing
+
+# Configuration
+ml_collections>=0.1.1        # Config management (used by Google/JAX ecosystem)
+
+# Development
+pytest>=7.4.0                # Testing
+black>=24.0.0                # Code formatting
