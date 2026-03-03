@@ -301,7 +301,7 @@ class SeedDataset(ParquetDataset):
     2. Indexed (palette-compressed) schema produced by convert_to_indexed.py:
           seed       (int64)  — reproducible random seed
           index_map  (bytes)  — uint8 [H,W] palette index map (raw bytes)
-          palette_data (bytes) — uint8 [N,3] RGB palette (raw bytes)
+          palette (bytes) — uint8 [N,3] RGB palette (raw bytes)
           n_colors   (int64)  — number of palette entries used
 
     When the indexed schema is detected the dataset automatically uses
@@ -331,7 +331,7 @@ class SeedDataset(ParquetDataset):
         )
         if self._is_indexed:
             self.__class__.COLUMNS = [
-                "seed", "index_map", "palette_data", "n_colors"
+                "seed", "index_map", "palette", "n_colors"
             ]
         else:
             self.__class__.COLUMNS = ["seed", "image"]
