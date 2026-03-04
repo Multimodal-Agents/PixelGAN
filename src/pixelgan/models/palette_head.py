@@ -93,9 +93,14 @@ class ToPaletteLogits(nn.Module):
         )
 
         logits = modulated_conv2d(x, kernel, s, demodulate=False)
-        logits = logits + self.param(
-            "bias", nn.initializers.zeros, (self.n_colors,)
-        )
+
+        # Bias: slot 0 (transparent / background) starts suppressed so the
+        # generator prefers visible colours from the first step, not blank pages.
+        def _init_bias(rng, shape):
+            b = jnp.zeros(shape)
+            return b.at[0].set(-2.0)   # suppress transparent slot at init
+
+        logits = logits + self.param("bias", _init_bias, (self.n_colors,))
         return logits  # [B, H, W, n_colors]
 
 
@@ -230,14 +235,19 @@ def indices_to_rgb_numpy(
 def get_palette_temperature(
     step: int,
     total_steps: int,
-    t_start: float = 1.0,
-    t_end:   float = 0.1,
+    t_start: float = 0.5,
+    t_end:   float = 0.05,
 ) -> float:
     """
     Cosine annealing schedule for palette softmax temperature.
 
-    Starts soft (exploratory colour mixing), ends sharp (near-argmax).
-    This matches the gumbel-softmax annealing strategy used in VQ-VAE literature.
+    Starts moderately soft (t_start=0.5, enough contrast to see structure),
+    ends very sharp (t_end=0.05, near-argmax hard assignments).
+
+    t_start was previously 1.0, which kept softmax nearly uniform for the
+    first ~25% of training and caused all generated images to look like
+    colour-averaged blobs.  0.5 gives enough initial contrast for D to see
+    structure while still being differentiable.
 
     Args:
         step:        Current training step.

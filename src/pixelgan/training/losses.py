@@ -303,20 +303,28 @@ def compute_g_loss(
     palette: Optional[jnp.ndarray] = None,
     lambda_recon: float = 0.0,
     lambda_palette: float = 0.0,
+    palette_logits: Optional[jnp.ndarray] = None,
+    lambda_entropy: float = 0.0,
 ) -> dict[str, jnp.ndarray]:
     """
     Compute all generator losses, returning a dict.
 
     Args:
-        fake_logits: [B] discriminator scores for fake images
-        fake_images: [B, H, W, C] generated images
-        real_images: [B, H, W, C] target images (for reconstruction loss)
-        palette: [N, 3] palette colors (for palette loss)
-        lambda_recon: Reconstruction loss weight (0 = disabled)
+        fake_logits:    [B] discriminator scores for fake images
+        fake_images:    [B, H, W, C] generated images
+        real_images:    [B, H, W, C] target images (for reconstruction loss)
+        palette:        [N, 3] palette colors (for palette loss)
+        lambda_recon:   Reconstruction loss weight (0 = disabled)
         lambda_palette: Palette loss weight (0 = disabled)
+        palette_logits: [B, H, W, N] raw palette slot logits before softmax.
+                        Used to compute entropy regularization.
+        lambda_entropy: Weight for per-pixel slot-entropy minimisation.
+                        Encourages crisp, near-argmax slot assignments early.
+                        Typical value: 0.05–0.1.
 
     Returns:
-        dict with 'total', 'adversarial', 'reconstruction', 'palette' losses
+        dict with 'total', 'adversarial', 'reconstruction', 'palette',
+        and optionally 'entropy' losses
     """
     losses = {}
 
@@ -337,6 +345,16 @@ def compute_g_loss(
             fake_images[:, :, :, :3], palette, lambda_palette
         )
         losses["total"] = losses["total"] + losses["palette"]
+
+    # Slot entropy regularisation: penalise high entropy (uniform) slot
+    # distributions.  This directly encourages crisp colour assignments
+    # rather than blended muddy averages, important especially early in
+    # training before the GAN gradient provides enough signal.
+    if palette_logits is not None and lambda_entropy > 0:
+        probs   = jax.nn.softmax(palette_logits, axis=-1)         # [B, H, W, N]
+        entropy = -jnp.sum(probs * jnp.log(probs + 1e-9), axis=-1)  # [B, H, W]
+        losses["entropy"] = lambda_entropy * jnp.mean(entropy)
+        losses["total"]   = losses["total"] + losses["entropy"]
 
     return losses
 

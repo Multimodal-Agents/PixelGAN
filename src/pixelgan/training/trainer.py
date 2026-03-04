@@ -246,7 +246,11 @@ def train_step_g(
             {"params": d_state.params}, fake_aug
         )
 
-        losses = compute_g_loss(fake_logits, fake_images)
+        losses = compute_g_loss(
+            fake_logits, fake_images,
+            palette_logits=(fake_output if output_mode == "palette_indexed" else None),
+            lambda_entropy=(0.05 if output_mode == "palette_indexed" else 0.0),
+        )
         return losses["total"], {**losses, "fake_images": fake_images}
 
     (loss, metrics), grads = jax.value_and_grad(g_loss_fn, has_aux=True)(
