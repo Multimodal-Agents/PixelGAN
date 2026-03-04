@@ -63,8 +63,20 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--max-colors", type=int, default=8,
-        help="Maximum palette size per sprite (default: 8). "
-             "Sprites with more colours will be quantized via median-cut.",
+        help="Maximum palette size (default: 8). In per-sprite mode sprites with "
+             "more colours are quantized. In --global-palette mode this caps the "
+             "k-means k.",
+    )
+    p.add_argument(
+        "--global-palette", action="store_true",
+        help="Build a single shared palette via k-means across all sprites and "
+             "remap every sprite to it.  Produces consistent slot semantics "
+             "which greatly improves palette-indexed GAN training quality.",
+    )
+    p.add_argument(
+        "--auto-k", action="store_true",
+        help="With --global-palette: automatically choose palette size using "
+             "the elbow method (capped at --max-colors).",
     )
     p.add_argument(
         "--image-size", type=int, default=None,
@@ -81,13 +93,14 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _infer_output_path(input_path: Path) -> Path:
+def _infer_output_path(input_path: Path, global_palette: bool = False) -> Path:
     """Derive output path from input path."""
+    suffix = "_indexed_global" if global_palette else "_indexed"
     if input_path.is_dir():
-        return input_path.parent / (input_path.name + "_indexed")
+        return input_path.parent / (input_path.name + suffix)
     else:
         stem = input_path.stem
-        return input_path.parent / (stem + "_indexed.parquet")
+        return input_path.parent / (stem + suffix + ".parquet")
 
 
 def convert_file(
