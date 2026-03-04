@@ -481,13 +481,17 @@ class PixelArtGenerator(nn.Module):
         )(z, c_embed, truncation_psi, train)  # [B, num_ws, w_dim]
 
         # Option C: Palette conditioning — encode palette and add to all W layers
-        # This lets the generator know "slot 2 = green this sprite, slot 5 = brown"
-        # before deciding where each slot's colour goes spatially.
-        if self.output_mode == "palette_indexed" and palette is not None:
-            pal_flat = palette.reshape(palette.shape[0], -1)          # [B, N*3]
-            pal_h    = nn.Dense(self.w_dim // 2, name="pal_enc_fc1")(pal_flat)
-            pal_h    = jax.nn.silu(pal_h)
-            pal_emb  = nn.Dense(self.w_dim, name="pal_enc_fc2")(pal_h)  # [B, w_dim]
+        # Always create these params when output_mode=="palette_indexed" so they
+        # are registered during init (palette=None on first call).  If no palette
+        # is supplied at runtime we fall back to a zero embedding.
+        if self.output_mode == "palette_indexed":
+            if palette is not None:
+                pal_flat = palette.reshape(palette.shape[0], -1)       # [B, N*3]
+            else:
+                pal_flat = jnp.zeros((z.shape[0], self.n_palette_colors * 3))
+            pal_h   = nn.Dense(self.w_dim // 2, name="pal_enc_fc1")(pal_flat)
+            pal_h   = jax.nn.silu(pal_h)
+            pal_emb = nn.Dense(self.w_dim, name="pal_enc_fc2")(pal_h)  # [B, w_dim]
             ws = ws + pal_emb[:, None, :]  # broadcast across all [B, num_ws, w_dim]
 
         # Synthesize image from W codes
