@@ -37,7 +37,7 @@ try:
     from .models.generator import make_generator, PixelArtGenerator
     from .models.discriminator import make_discriminator, PixelArtDiscriminator
     from .models.palette_head import (
-        ToPaletteLogits, PaletteLookup,
+        ToPaletteLogits, PaletteLookup, palette_lookup,
         get_palette_temperature, decode_to_indices,
     )
     from .models.vqvae import VQVAE, make_vqvae, vqvae_loss
@@ -63,7 +63,7 @@ if _JAX_AVAILABLE:
     __all__ += [
         "make_generator", "PixelArtGenerator",
         "make_discriminator", "PixelArtDiscriminator",
-        "ToPaletteLogits", "PaletteLookup",
+        "ToPaletteLogits", "PaletteLookup", "palette_lookup",
         "get_palette_temperature", "decode_to_indices",
         "VQVAE", "make_vqvae", "vqvae_loss",
         "PixelGANTrainer", "VQVAETrainer", "load_vqvae_decoder",

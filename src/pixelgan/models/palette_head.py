@@ -152,6 +152,29 @@ class PaletteLookup(nn.Module):
 
 
 # ---------------------------------------------------------------------------
+# palette_lookup — free function version (no nn.Module overhead)
+# ---------------------------------------------------------------------------
+
+def palette_lookup(
+    logits:      jnp.ndarray,          # [B, H, W, N]
+    palette:     jnp.ndarray,          # [N, 3] or [B, N, 3]  float32 in [-1,1]
+    temperature: float = 1.0,
+) -> jnp.ndarray:                      # [B, H, W, 3]
+    """
+    Differentiable palette lookup: logits → RGB via softmax-weighted sum.
+
+    Drop-in replacement for ``PaletteLookup()(logits, palette, temperature)``
+    that works outside of Flax modules (e.g. inside jit-compiled functions).
+    """
+    probs = jax.nn.softmax(logits / temperature, axis=-1)  # [B, H, W, N]
+    if palette.ndim == 2:
+        rgb = jnp.einsum("bhwn,nc->bhwc", probs, palette)
+    else:
+        rgb = jnp.einsum("bhwn,bnc->bhwc", probs, palette)
+    return rgb
+
+
+# ---------------------------------------------------------------------------
 # Hard (argmax) decode — inference only, not differentiable
 # ---------------------------------------------------------------------------
 

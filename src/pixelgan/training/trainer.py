@@ -41,7 +41,7 @@ from flax import traverse_util
 from ..models.generator import PixelArtGenerator, make_generator
 from ..models.discriminator import PixelArtDiscriminator, make_discriminator
 from ..models.palette_head import (
-    PaletteLookup, get_palette_temperature,
+    PaletteLookup, palette_lookup, get_palette_temperature,
     decode_to_indices, indices_to_rgb_numpy,
 )
 from ..training.losses import (
@@ -159,7 +159,7 @@ def train_step_d(
     )
     if output_mode == "palette_indexed":
         # Convert palette logits → RGB so D always receives 3-channel images
-        fake_images = PaletteLookup()(fake_output, palette, temperature)
+        fake_images = palette_lookup(fake_output, palette, temperature)
     else:
         fake_images = fake_output
     fake_images = jax.lax.stop_gradient(fake_images)
@@ -232,8 +232,8 @@ def train_step_g(
             mutable=False,
         )
         if output_mode == "palette_indexed":
-            # PaletteLookup is fully differentiable — gradients flow into G
-            fake_images = PaletteLookup()(fake_output, palette, temperature)
+            # palette_lookup is fully differentiable — gradients flow into G
+            fake_images = palette_lookup(fake_output, palette, temperature)
         else:
             fake_images = fake_output
 

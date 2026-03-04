@@ -4,6 +4,7 @@ from .mapping_network import MappingNetwork, TextEncoder, ImageEncoder
 from .palette_head import (
     ToPaletteLogits,
     PaletteLookup,
+    palette_lookup,
     decode_to_indices,
     indices_to_rgb_numpy,
     get_palette_temperature,
