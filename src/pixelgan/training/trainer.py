@@ -213,6 +213,7 @@ def train_step_g(
     palette: jnp.ndarray,             # [B, N, 3] per-sample palette (ignored in rgb mode)
     temperature: float,               # Softmax temperature for PaletteLookup
     output_mode: str,                 # "rgb" | "palette_indexed"  (static)
+    lambda_entropy: float = 0.0,      # Slot entropy regularisation weight (decays over time)
 ) -> tuple[GANTrainState, dict]:
     """
     Generator training step.
@@ -249,7 +250,7 @@ def train_step_g(
         losses = compute_g_loss(
             fake_logits, fake_images,
             palette_logits=(fake_output if output_mode == "palette_indexed" else None),
-            lambda_entropy=(0.05 if output_mode == "palette_indexed" else 0.0),
+            lambda_entropy=lambda_entropy,
         )
         return losses["total"], {**losses, "fake_images": fake_images}
 
@@ -658,6 +659,17 @@ class PixelGANTrainer:
         z2 = jax.random.normal(z_rng2, (B, self.arch.z_dim))
         ema_beta = self._compute_ema_beta()
 
+        # Decay entropy regularisation weight to 0 over the first 15 000 steps.
+        # Early on it encourages crisp slot assignments; after that the GAN
+        # gradient is strong enough and keeping it on drives pixels into the
+        # transparent slot (blank outputs).
+        _entropy_warmup = 15_000
+        lambda_entropy = (
+            0.05 * max(0.0, 1.0 - step / _entropy_warmup)
+            if self._output_mode == "palette_indexed"
+            else 0.0
+        )
+
         self.g_state, g_metrics = train_step_g(
             self.generator, self.discriminator,
             self.g_state, self.d_state,
@@ -665,6 +677,7 @@ class PixelGANTrainer:
             self.ada_p, ema_beta,
             g_rng,
             palette, tau, self._output_mode,
+            lambda_entropy=lambda_entropy,
         )
 
         # Update ADA every ada_interval steps
@@ -680,6 +693,7 @@ class PixelGANTrainer:
             "r1": float(d_metrics.get("r1", 0.0)),
             "ada_p": self.ada_p,
             "ema_beta": ema_beta,
+            "lambda_entropy": lambda_entropy,
         }
 
     # ------------------------------------------------------------------
