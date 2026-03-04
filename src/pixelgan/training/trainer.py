@@ -153,6 +153,7 @@ def train_step_d(
         {"params": g_state.params, "ema": g_state.ema_vars},
         z,
         condition,
+        palette,
         train=False,
         rng=noise_rng,
         mutable=False,
@@ -227,6 +228,7 @@ def train_step_g(
             {"params": g_params, "ema": g_ema_vars},
             z,
             condition,
+            palette,
             train=True,
             rng=noise_rng,
             mutable=False,
@@ -275,12 +277,14 @@ def generate_samples(
     z: jnp.ndarray,
     condition: Optional[jnp.ndarray] = None,
     rng: Optional[jax.random.KeyArray] = None,
+    palette: Optional[jnp.ndarray] = None,
 ) -> jnp.ndarray:
     """Generate images using EMA generator parameters."""
     return generator.apply(
         {"params": g_state.ema_params, "ema": g_state.ema_vars},
         z,
         condition,
+        palette,
         train=False,
         rng=rng,
         truncation_psi=0.7,
@@ -466,15 +470,28 @@ class PixelGANTrainer:
             z = jax.random.normal(z_rng, (n_samples, self.arch.z_dim))
 
             self.rng, gen_rng = jax.random.split(self.rng)
-            images = generate_samples(self.generator, self.g_state, z, None, gen_rng)
 
-            # Option A: palette-indexed → convert logits to uint8 RGB
-            if (self._output_mode == "palette_indexed"
-                    and self._last_palette is not None):
-                indices = np_.array(decode_to_indices(images))  # [B, H, W] uint8
-                pal_float = self._last_palette[0]               # [N, 3] float32 [-1,1]
-                pal_uint8 = ((np_.clip(pal_float, -1, 1) + 1) * 127.5).astype(np_.uint8)
-                images_np = indices_to_rgb_numpy(indices, pal_uint8)
+            # Build per-sample palette array for generator conditioning
+            sample_palettes_jnp = None
+            sample_palettes_np  = None
+            if self._output_mode == "palette_indexed" and self._last_palette is not None:
+                B_pal = self._last_palette.shape[0]
+                reps  = (n_samples + B_pal - 1) // B_pal
+                sample_palettes_np  = np_.tile(self._last_palette, (reps, 1, 1))[:n_samples]
+                sample_palettes_jnp = jnp.array(sample_palettes_np)
+
+            images = generate_samples(self.generator, self.g_state, z, None, gen_rng,
+                                       palette=sample_palettes_jnp)
+
+            # Option A: palette-indexed → convert logits to uint8 RGB per sample
+            if self._output_mode == "palette_indexed" and sample_palettes_np is not None:
+                indices = np_.array(decode_to_indices(images))  # [n_samples, H, W]
+                images_np_list = []
+                for i in range(n_samples):
+                    pal_f  = sample_palettes_np[i]                                      # [N,3] float32
+                    pal_u8 = ((np_.clip(pal_f, -1, 1) + 1) * 127.5).astype(np_.uint8)
+                    images_np_list.append(indices_to_rgb_numpy(indices[i], pal_u8))     # [H,W,3]
+                images_np = np_.stack(images_np_list)                                   # [n,H,W,3]
             else:
                 # RGB mode: standard denormalize [-1,1] -> [0,255]
                 images_np = np_.array(images)

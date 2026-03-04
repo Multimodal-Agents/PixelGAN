@@ -418,6 +418,7 @@ class PixelArtGenerator(nn.Module):
         self,
         z: jnp.ndarray,                   # [B, z_dim]
         condition: Optional[jnp.ndarray] = None,  # conditioning input
+        palette: Optional[jnp.ndarray] = None,    # [B, N, 3] palette for indexed mode
         truncation_psi: float = 1.0,
         rng: Optional[jax.random.KeyArray] = None,
         train: bool = True,
@@ -431,6 +432,10 @@ class PixelArtGenerator(nn.Module):
                 - class: [B] int32 class indices
                 - text: [B, seq_len] int32 token indices
                 - image: [B, H, W, C] source image
+            palette: float32 [B, N, 3] in [-1,1] — per-sample palette for
+                palette_indexed output mode. Encoded and injected into every
+                W-space style layer so the generator knows which colour lives
+                in which slot before deciding where to place it.
             truncation_psi: 1.0 = full diversity, 0.7 = more quality
             rng: PRNG key for noise injection
             train: Training vs inference mode
@@ -474,6 +479,16 @@ class PixelArtGenerator(nn.Module):
             num_ws=self.num_ws,
             name="mapping",
         )(z, c_embed, truncation_psi, train)  # [B, num_ws, w_dim]
+
+        # Option C: Palette conditioning — encode palette and add to all W layers
+        # This lets the generator know "slot 2 = green this sprite, slot 5 = brown"
+        # before deciding where each slot's colour goes spatially.
+        if self.output_mode == "palette_indexed" and palette is not None:
+            pal_flat = palette.reshape(palette.shape[0], -1)          # [B, N*3]
+            pal_h    = nn.Dense(self.w_dim // 2, name="pal_enc_fc1")(pal_flat)
+            pal_h    = jax.nn.silu(pal_h)
+            pal_emb  = nn.Dense(self.w_dim, name="pal_enc_fc2")(pal_h)  # [B, w_dim]
+            ws = ws + pal_emb[:, None, :]  # broadcast across all [B, num_ws, w_dim]
 
         # Synthesize image from W codes
         images = SynthesisNetwork(
