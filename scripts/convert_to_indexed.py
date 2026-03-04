@@ -97,6 +97,8 @@ def convert_file(
     image_size: int | None,
     stats_only: bool,
     quiet: bool,
+    global_palette: bool = False,
+    auto_k: bool = False,
 ) -> dict:
     """
     Convert a single parquet file.
@@ -116,14 +118,19 @@ def convert_file(
             rgba_to_indexed,
             save_indexed_parquet,
             IndexedSprite,
+            build_global_palette,
+            remap_to_global_palette,
+            measure_color_diversity,
         )
     except ImportError:
-        # Try relative import when running from repo root
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
         from pixelgan.data.indexed_format import (
             rgba_to_indexed,
             save_indexed_parquet,
             IndexedSprite,
+            build_global_palette,
+            remap_to_global_palette,
+            measure_color_diversity,
         )
 
     if not quiet:
@@ -132,26 +139,21 @@ def convert_file(
     df = pd.read_parquet(input_path, columns=["seed", "image"])
     n = len(df)
 
+    # ── Phase 1: decode all sprites (always needed) ──────────────────────
     sprites: list[IndexedSprite] = []
     seeds:   list[int]           = []
     n_quantized = 0
     color_counts: list[int] = []
 
     for i, row in df.iterrows():
-        # Decode PNG → RGBA
         img = Image.open(io.BytesIO(bytes(row["image"]))).convert("RGBA")
-
         if image_size is not None and img.size != (image_size, image_size):
             img = img.resize((image_size, image_size), Image.NEAREST)
 
-        # Count unique colours before quantization (for stats)
         arr = np.array(img)
-        unique_before = len(
-            set(map(tuple, arr.reshape(-1, 4).tolist()))
-        )
+        unique_before = len(set(map(tuple, arr.reshape(-1, 4).tolist())))
         color_counts.append(unique_before)
 
-        # Convert to indexed
         sprite = rgba_to_indexed(img, max_colors=max_colors)
         if sprite.n_colors < unique_before:
             n_quantized += 1
@@ -160,23 +162,65 @@ def convert_file(
         seeds.append(int(row["seed"]))
 
         if not quiet and (i % 200 == 0 or i == n - 1):
-            print(f"  [{i + 1:>5}/{n}] unique_colors={unique_before}", end="\r", flush=True)
+            print(f"  [Phase 1] [{i + 1:>5}/{n}] unique_colors={unique_before}",
+                  end="\r", flush=True)
+
+    if not quiet:
+        print()
+
+    # ── Phase 2 (global palette): measure diversity → k-means → remap ────
+    chosen_k = max_colors
+    if global_palette:
+        if not quiet:
+            print("  Measuring dataset colour diversity...", flush=True)
+        diversity = measure_color_diversity(sprites, max_k=max_colors)
+        n_unique  = diversity["n_unique_colors"]
+
+        if auto_k:
+            chosen_k = max(1, diversity["recommended_k"])
+            if not quiet:
+                print(f"  Unique colours in dataset : {n_unique:,}")
+                print(f"  Auto-selected palette size: {chosen_k}  "
+                      f"(elbow of k-means inertia, capped at {max_colors})")
+        else:
+            chosen_k = min(max_colors, n_unique)
+            if not quiet:
+                print(f"  Unique colours in dataset : {n_unique:,}")
+                print(f"  Using palette size        : {chosen_k}")
+
+        if not quiet:
+            print(f"  Running k-means (k={chosen_k}) over {n_unique:,} unique colours...",
+                  flush=True)
+
+        shared_pal = build_global_palette(sprites, n_colors=chosen_k)
+
+        if not quiet:
+            print(f"  Remapping {n:,} sprites to global palette...", flush=True)
+        sprites = [
+            remap_to_global_palette(s, shared_pal) for s in sprites
+        ]
+        if not quiet:
+            print(f"  Global palette built: {chosen_k} visible slots + 1 transparent")
 
     stats = {
-        "n_sprites":         n,
+        "n_sprites":          n,
         "mean_unique_colors": float(np.mean(color_counts)),
         "max_colors_seen":    int(np.max(color_counts)),
         "min_colors_seen":    int(np.min(color_counts)),
         "n_quantized":        n_quantized,
+        "palette_size":       chosen_k,
+        "global_palette":     global_palette,
     }
 
     if not quiet:
-        print()
         print(f"  n_sprites         = {stats['n_sprites']:,}")
         print(f"  colours/sprite    = {stats['mean_unique_colors']:.1f} avg, "
               f"{stats['min_colors_seen']} min, {stats['max_colors_seen']} max")
-        print(f"  quantized (>{max_colors} colours) = {n_quantized} "
-              f"({100 * n_quantized / n:.1f}%)")
+        if not global_palette:
+            print(f"  quantized (>{max_colors} colours) = {n_quantized} "
+                  f"({100 * n_quantized / n:.1f}%)")
+        else:
+            print(f"  palette mode      = global shared ({chosen_k} colours)")
 
     if not stats_only:
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -193,6 +237,8 @@ def main() -> None:
     args = parse_args()
     input_path  = Path(args.input).resolve()
     output_path = Path(args.output).resolve() if args.output else None
+    gp = getattr(args, "global_palette", False)
+    ak = getattr(args, "auto_k", False)
 
     if input_path.is_dir():
         parquet_files = sorted(input_path.glob("*.parquet"))
@@ -201,13 +247,14 @@ def main() -> None:
             sys.exit(1)
 
         if output_path is None:
-            output_path = _infer_output_path(input_path)
+            output_path = _infer_output_path(input_path, global_palette=gp)
 
         if not args.quiet:
             print(f"Converting {len(parquet_files)} parquet file(s)")
-            print(f"  input_dir   = {input_path}")
-            print(f"  output_dir  = {output_path}")
-            print(f"  max_colors  = {args.max_colors}")
+            print(f"  input_dir      = {input_path}")
+            print(f"  output_dir     = {output_path}")
+            print(f"  max_colors     = {args.max_colors}")
+            print(f"  global_palette = {gp}  (auto_k={ak})")
             if args.image_size:
                 print(f"  image_size  = {args.image_size}")
             if args.stats_only:
@@ -222,6 +269,8 @@ def main() -> None:
                 image_size=args.image_size,
                 stats_only=args.stats_only,
                 quiet=args.quiet,
+                global_palette=gp,
+                auto_k=ak,
             )
             all_stats.append(stats)
 
@@ -234,13 +283,14 @@ def main() -> None:
 
     elif input_path.is_file():
         if output_path is None:
-            output_path = _infer_output_path(input_path)
+            output_path = _infer_output_path(input_path, global_palette=gp)
 
         if not args.quiet:
             print(f"Converting {input_path.name}")
-            print(f"  input       = {input_path}")
-            print(f"  output      = {output_path}")
-            print(f"  max_colors  = {args.max_colors}")
+            print(f"  input          = {input_path}")
+            print(f"  output         = {output_path}")
+            print(f"  max_colors     = {args.max_colors}")
+            print(f"  global_palette = {gp}  (auto_k={ak})")
             if args.image_size:
                 print(f"  image_size  = {args.image_size}")
             if args.stats_only:
@@ -252,6 +302,8 @@ def main() -> None:
             image_size=args.image_size,
             stats_only=args.stats_only,
             quiet=args.quiet,
+            global_palette=gp,
+            auto_k=ak,
         )
         print("\nDone.")
 

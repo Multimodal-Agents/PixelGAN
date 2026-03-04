@@ -36,6 +36,10 @@ try:
         load_indexed_parquet,
         is_indexed_parquet,
         decode_indexed_row,
+        collect_all_colors,
+        measure_color_diversity,
+        build_global_palette,
+        remap_to_global_palette,
     )
 except ImportError:
     pass  # pyarrow not installed — indexed format unavailable

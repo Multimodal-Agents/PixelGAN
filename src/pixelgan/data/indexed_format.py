@@ -270,6 +270,227 @@ def indexed_to_palette_array(
 
 
 # ---------------------------------------------------------------------------
+# Global shared palette (Option B quality upgrade)
+# ---------------------------------------------------------------------------
+
+def collect_all_colors(sprites: "Sequence[IndexedSprite]") -> np.ndarray:
+    """
+    Collect all unique visible RGB colors from a list of IndexedSprites.
+
+    Returns:
+        uint8 [M, 3] array of unique colors (slot 0 / transparent excluded).
+    """
+    color_set: set[tuple[int, int, int]] = set()
+    for sprite in sprites:
+        pal = sprite.palette[1:]          # skip slot 0 (transparent)
+        for row in pal[:sprite.n_colors]:
+            color_set.add(tuple(int(v) for v in row))
+    if not color_set:
+        return np.zeros((0, 3), dtype=np.uint8)
+    return np.array(sorted(color_set), dtype=np.uint8)
+
+
+def measure_color_diversity(
+    sprites: "Sequence[IndexedSprite]",
+    max_k: int = 16,
+    improvement_threshold: float = 0.05,
+) -> dict:
+    """
+    Measure color diversity across all sprites and recommend a global palette size.
+
+    Uses the "elbow" method: stop adding palette slots once k-means inertia
+    improves by less than `improvement_threshold` (default 5%).
+
+    Args:
+        sprites:               List of IndexedSprites to analyse.
+        max_k:                 Maximum palette size to test.
+        improvement_threshold: Minimum fractional improvement to keep adding slots.
+
+    Returns:
+        dict with:
+            n_unique_colors  – total unique colors across all sprites
+            inertias         – list of k-means inertias for k=1..max_k
+            recommended_k    – suggested palette size (capped at max_k)
+    """
+    all_colors = collect_all_colors(sprites).astype(np.float32)
+    n_unique = len(all_colors)
+
+    if n_unique == 0:
+        return {"n_unique_colors": 0, "inertias": [], "recommended_k": 1}
+
+    cap = min(max_k, n_unique)
+    inertias: list[float] = []
+
+    for k in range(1, cap + 1):
+        _, inertia = _kmeans_colors(all_colors, k)
+        inertias.append(inertia)
+
+    # Find elbow: first k where marginal gain < threshold
+    recommended_k = cap
+    for i in range(1, len(inertias)):
+        if inertias[0] < 1e-6:
+            recommended_k = 1
+            break
+        improvement = (inertias[i - 1] - inertias[i]) / (inertias[0] + 1e-9)
+        if improvement < improvement_threshold:
+            recommended_k = i  # 1-indexed = i slots gives diminishing returns
+            break
+
+    return {
+        "n_unique_colors": n_unique,
+        "inertias":        inertias,
+        "recommended_k":   recommended_k,
+    }
+
+
+def build_global_palette(
+    sprites: "Sequence[IndexedSprite]",
+    n_colors: int,
+    bg_slot_color: tuple[int, int, int] = (0, 0, 0),
+) -> np.ndarray:
+    """
+    Build a global shared palette for a dataset via k-means clustering of all
+    visible colors.  Every sprite will be remapped to this palette so the
+    generator always sees the same slot→color mapping.
+
+    Args:
+        sprites:       All IndexedSprites in the dataset.
+        n_colors:      Number of *visible* palette slots (excl. transparent slot 0).
+        bg_slot_color: Color stored at slot 0 (never rendered).
+
+    Returns:
+        uint8 [n_colors+1, 3]  —  slot 0 = bg, slots 1..n_colors = k-means centers.
+    """
+    all_colors = collect_all_colors(sprites).astype(np.float32)
+    if len(all_colors) == 0:
+        centers = np.zeros((n_colors, 3), dtype=np.float32)
+    elif len(all_colors) <= n_colors:
+        # Fewer unique colors than slots — pad with zeros
+        centers = np.zeros((n_colors, 3), dtype=np.float32)
+        centers[:len(all_colors)] = all_colors
+    else:
+        centers, _ = _kmeans_colors(all_colors, n_colors, n_init=10)
+
+    palette = np.vstack([
+        np.array([bg_slot_color], dtype=np.uint8),
+        np.clip(np.round(centers), 0, 255).astype(np.uint8),
+    ])  # [n_colors+1, 3]
+    return palette
+
+
+def remap_to_global_palette(
+    sprite: IndexedSprite,
+    global_palette: np.ndarray,   # uint8 [n_colors+1, 3]
+) -> IndexedSprite:
+    """
+    Remap a sprite's index_map so every pixel refers to an entry in
+    `global_palette` (nearest-color matching in RGB space).
+
+    Transparent pixels (old index 0) stay at index 0.
+
+    Args:
+        sprite:         IndexedSprite with its own local palette.
+        global_palette: uint8 [N+1, 3] shared palette (slot 0 = transparent).
+
+    Returns:
+        New IndexedSprite using global_palette with remapped index_map.
+    """
+    old_pal = sprite.palette.astype(np.int32)    # [M, 3]
+    new_pal = global_palette.astype(np.int32)    # [N+1, 3]
+
+    # For each old slot, find the nearest slot in the new palette (skip slot 0 → slot 0)
+    n_old = old_pal.shape[0]
+    slot_remap = np.zeros(n_old, dtype=np.uint8)  # old_idx → new_idx
+    slot_remap[0] = 0  # transparent stays transparent
+
+    vis_new = new_pal[1:]  # [N, 3] visible slots only
+    for old_idx in range(1, n_old):
+        diffs  = vis_new - old_pal[old_idx]       # [N, 3]
+        dists  = np.sum(diffs ** 2, axis=1)       # [N]
+        nearest_vis = int(np.argmin(dists))
+        slot_remap[old_idx] = nearest_vis + 1     # +1 because slot 0 = transparent
+
+    # Remap index map
+    old_map   = sprite.index_map                  # [H, W] uint8
+    clamped   = np.clip(old_map, 0, n_old - 1)
+    new_map   = slot_remap[clamped].astype(np.uint8)
+
+    n_colors = global_palette.shape[0] - 1       # number of visible slots
+
+    return IndexedSprite(
+        index_map = new_map,
+        palette   = global_palette.copy(),
+        n_colors  = n_colors,
+    )
+
+
+def _kmeans_colors(
+    colors: np.ndarray,    # [N, 3] float32
+    k: int,
+    n_init: int = 5,
+    max_iter: int = 100,
+) -> tuple[np.ndarray, float]:
+    """
+    Simple k-means clustering on RGB float32 colors.
+
+    Tries `n_init` random initialisations, returns best (centroids, inertia).
+    Uses numpy only — no scipy/sklearn dependency.
+
+    Returns:
+        centroids: float32 [k, 3]
+        inertia:   float   (sum of squared distances to nearest centroid)
+    """
+    rng = np.random.default_rng(42)
+    N = len(colors)
+    if k >= N:
+        # More clusters than points — every point is its own cluster
+        pad = np.zeros((k - N, 3), dtype=np.float32)
+        centers = np.vstack([colors, pad]) if N > 0 else pad
+        return centers[:k], 0.0
+
+    best_centers: np.ndarray | None = None
+    best_inertia = float("inf")
+
+    for _ in range(n_init):
+        # k-means++ initialization
+        idx = [rng.integers(0, N)]
+        for _ in range(1, k):
+            dists = np.min(
+                np.sum((colors[:, None] - colors[idx]) ** 2, axis=2),
+                axis=1,
+            )
+            probs = dists / (dists.sum() + 1e-9)
+            idx.append(rng.choice(N, p=probs))
+        centers = colors[idx].copy()  # [k, 3]
+
+        for _it in range(max_iter):
+            # Assign
+            dists = np.sum(
+                (colors[:, None] - centers[None]) ** 2, axis=2
+            )  # [N, k]
+            labels = np.argmin(dists, axis=1)  # [N]
+
+            # Update
+            new_centers = np.zeros_like(centers)
+            for c in range(k):
+                members = colors[labels == c]
+                new_centers[c] = members.mean(axis=0) if len(members) else centers[c]
+
+            if np.allclose(new_centers, centers, atol=0.5):
+                break
+            centers = new_centers
+
+        inertia = float(
+            np.sum(np.min(np.sum((colors[:, None] - centers[None]) ** 2, axis=2), axis=1))
+        )
+        if inertia < best_inertia:
+            best_inertia = inertia
+            best_centers = centers.copy()
+
+    return best_centers, best_inertia
+
+
+# ---------------------------------------------------------------------------
 # Parquet I/O
 # ---------------------------------------------------------------------------
 
