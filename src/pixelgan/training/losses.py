@@ -350,7 +350,10 @@ def compute_g_loss(
     # distributions.  This directly encourages crisp colour assignments
     # rather than blended muddy averages, important especially early in
     # training before the GAN gradient provides enough signal.
-    if palette_logits is not None and lambda_entropy > 0:
+    # NOTE: `lambda_entropy` is a traced JAX value inside jit, so we cannot
+    # use a Python `if lambda_entropy > 0` guard.  Multiply unconditionally —
+    # when lambda_entropy=0 the term contributes exactly zero.
+    if palette_logits is not None:
         probs   = jax.nn.softmax(palette_logits, axis=-1)         # [B, H, W, N]
         entropy = -jnp.sum(probs * jnp.log(probs + 1e-9), axis=-1)  # [B, H, W]
         losses["entropy"] = lambda_entropy * jnp.mean(entropy)

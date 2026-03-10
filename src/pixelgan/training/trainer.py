@@ -505,7 +505,9 @@ class PixelGANTrainer:
             n_cols = min(8, n_samples)
             n_rows = (n_samples + n_cols - 1) // n_cols
             H = W = self.arch.image_size
-            C = self.arch.image_channels
+            # In palette_indexed mode images_np is always 3-channel RGB regardless
+            # of arch.image_channels, so derive C from the actual array.
+            C = images_np.shape[-1]
             scale = max(1, 128 // H)  # Upscale tiny sprites for visibility
 
             grid_h = n_rows * H * scale
@@ -542,13 +544,9 @@ class PixelGANTrainer:
             Image.fromarray(grid, mode=mode).save(out_path)
             print(f"  Saved samples -> {out_path}")
         except Exception as e:
+            import traceback
             print(f"  Warning: Could not save samples: {e}")
-
-            out_path = self.output_dir / f"samples_{step:06d}.png"
-            Image.fromarray(grid, mode=mode).save(out_path)
-            print(f"  Saved samples -> {out_path}")
-        except Exception as e:
-            print(f"  Warning: Could not save samples: {e}")
+            traceback.print_exc()
 
     def _save_checkpoint(self, step: int):
         """Save model checkpoint."""
@@ -767,15 +765,17 @@ class PixelGANTrainer:
                 if step % log_every == 0:
                     elapsed = time.time() - t_start
                     kimg_s = self.cur_kimg / elapsed
+                    g, d = metrics['g_loss'], metrics['d_loss']
+                    collapse = " *** COLLAPSE? G+D both < 0.05 — consider restarting ***" \
+                        if g < 0.05 and d < 0.05 else ""
                     print(
                         f"Step {step:6d} | kimg {self.cur_kimg:6.1f} | "
-                        f"G {metrics['g_loss']:.3f} | D {metrics['d_loss']:.3f} | "
+                        f"G {g:.3f} | D {d:.3f} | "
                         f"R1 {metrics['r1']:.3f} | ADA {metrics['ada_p']:.3f} | "
-                        f"{kimg_s:.2f} kimg/s"
+                        f"{kimg_s:.2f} kimg/s{collapse}"
                     )
                 if step % sample_every == 0:
                     self._save_samples(step)
-                    print(f"  Saved samples -> {self.output_dir}/samples_{step:06d}.png")
                 if step % checkpoint_every == 0:
                     self._save_checkpoint(step)
                     print(f"  Saved checkpoint -> {self.output_dir}/checkpoints/step_{step:06d}")

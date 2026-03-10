@@ -23,6 +23,9 @@ outputs/
 datasets/sprites/*.parquet
 datasets/sprites/preview_*.png
 datasets/sprites/singles/
+# Raw image sheets (regenerate with generate_zzsprites.py --preview-only)
+datasets/sprites/sheet_*.png
+datasets/sprites/zzsprite_sheet_demo_zeor.png
 
 # Logs
 *.log
@@ -35,10 +38,18 @@ datasets/sprites/singles/
 # OS
 .DS_Store
 Thumbs.db
+desktop.ini
 
 # IDE
 .vscode/settings.json
 .idea/
+
+# Large model weights / checkpoints
+*.pkl
+*.pt
+*.pth
+*.ckpt
+*.safetensors
 
 # Checkpoints (large binary, tracked separately if needed)
 # Uncomment to also ignore checkpoints:
