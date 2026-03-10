@@ -1,4 +1,4 @@
-# Contributing to PixelGAN
+# Contributing to PixelPerfectGAN
 
 ## Branch strategy
 
