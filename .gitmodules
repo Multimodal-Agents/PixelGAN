@@ -1,0 +1,3 @@
+[submodule "vendor/ZzSprite"]
+	path = vendor/ZzSprite
+	url = https://github.com/KilledByAPixel/ZzSprite.git
