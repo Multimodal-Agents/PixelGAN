@@ -1,4 +1,4 @@
-# PixelGAN
+# PixelPerfectGAN
 
 > **StyleGAN2-inspired pixel art GAN in JAX/Flax — ~25× fewer parameters, ~100× faster inference.**
 
@@ -183,12 +183,14 @@ Each ResBlock:  `Conv 3×3 → LeakyReLU → Conv 3×3 ↓2 → LeakyReLU` with 
 ### 1 — Install
 
 ```bash
-git clone --recurse-submodules https://github.com/Multimodal-Agents/PixelGAN.git
+git clone --recurse-submodules https://github.com/Multimodal-Agents/PixelPerfectGAN.git
 cd PixelGAN
 pip install -r requirements.txt
 ```
 
 > `--recurse-submodules` pulls [ZzSprite](https://github.com/KilledByAPixel/ZzSprite) into `vendor/ZzSprite` automatically.
+
+> Repo: https://github.com/Multimodal-Agents/PixelPerfectGAN
 
 ### 2 — Generate a ZzSprite dataset
 
@@ -348,6 +350,16 @@ If you use this project please cite:
 }
 ```
 
+**PixelPerfectGAN** — this repository:
+```bibtex
+@misc{pixelperfectgan2026,
+  title  = {{PixelPerfectGAN}: StyleGAN2-Inspired Pixel Art GAN in JAX/Flax},
+  author = {Multimodal-Agents},
+  year   = {2026},
+  url    = {https://github.com/Multimodal-Agents/PixelPerfectGAN}
+}
+```
+
 **ZzSprite** — procedural sprite generator used for dataset creation:
 ```bibtex
 @misc{zzsprite,
@@ -363,7 +375,7 @@ If you use this project please cite:
 ## Trained models
 
 See [models/MODELS.md](models/MODELS.md) for the full model catalog.
-Checkpoint files are attached to [GitHub Releases](https://github.com/Multimodal-Agents/PixelGAN/releases).
+Checkpoint files are attached to [GitHub Releases](https://github.com/Multimodal-Agents/PixelPerfectGAN/releases).
 
 ### space-monsters-1 *(training)*
 

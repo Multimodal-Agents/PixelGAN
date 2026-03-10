@@ -1,4 +1,4 @@
-# PixelGAN Model Catalog
+# PixelPerfectGAN Model Catalog
 
 Trained checkpoints are tracked here. Checkpoints themselves are excluded from
 the repo (see `.gitignore`) — attach them to GitHub Releases.
@@ -57,5 +57,5 @@ python scripts/train.py \
 1. Train using `scripts/train.py`
 2. Add a row in this file with full hyperparams and final metrics
 3. Export the checkpoint to `models/<name>/checkpoint/`
-4. Upload the checkpoint as a GitHub Release asset
+4. Upload the checkpoint as a GitHub Release asset at https://github.com/Multimodal-Agents/PixelPerfectGAN/releases
 5. Link the release here
