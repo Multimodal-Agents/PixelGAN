@@ -360,6 +360,53 @@ If you use this project please cite:
 
 ---
 
+## Trained models
+
+See [models/MODELS.md](models/MODELS.md) for the full model catalog.
+Checkpoint files are attached to [GitHub Releases](https://github.com/Multimodal-Agents/PixelGAN/releases).
+
+### space-monsters-1 *(training)*
+
+Unconditional pixel art creature generator trained on ZzSprite procedural data — all 4 colour modes.
+
+| | |
+|---|---|
+| Dataset | ZzSprite 32×32 (600 sprites · 4 modes · seed + text) |
+| G / D params | 2.53M / 9.06M |
+| Size | 32×32 RGB |
+| Batch | 32 |
+| G LR / D LR | 2e-4 / 2e-4 |
+| R1 γ | 10.0 |
+
+**Smoke test results (500 steps — 16 kimg):**
+
+| Metric | Value |
+|---|---|
+| G loss | 4.2965 |
+| D loss | 0.0984 |
+| ADA p | 0.029 |
+| Training speed | 0.037 kimg/s |
+| JIT compile (first run) | ~4 min 28 s |
+| Train wall time (500 steps) | ~2 min 33 s |
+
+> Smoke test confirmed model builds, data loads, and JAX/GPU pipeline is solid.
+> Full 10 000-step run (~90 min) is the next step.
+
+Full training command:
+```bash
+python scripts/train.py \
+    --size 32 \
+    --dataset datasets/sprites/sprites_zzsprite_32x32.parquet \
+    --output runs/space-monsters-1 \
+    --steps 10000 \
+    --log-every 200 \
+    --sample-every 500 \
+    --checkpoint-every 2000 \
+    --no-prealloc
+```
+
+---
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
